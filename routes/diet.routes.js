@@ -4,6 +4,6 @@ const dietController = require('../controllers/diet.controller');
 
 router.post('/generate', dietController.generateDietPlan);
 
-router.post('/generate-diet', dietController.getDietPlan);
+// router.post('/generate-diet', dietController.getDietPlan);
 
 module.exports = router;

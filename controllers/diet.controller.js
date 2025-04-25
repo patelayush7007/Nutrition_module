@@ -1,10 +1,9 @@
 const Food = require('../models/food.model');
 const { filterFoods, selectTopFoods } = require('../utils/dietAlgorithm');
 
-// Scoring function to calculate the score based on the goal
+// Scoring function
 const scoreFood = (food, goal) => {
   let score = 0;
-
   const kcal = food.unit_serving_energy_kcal || 0;
   const protein = food.unit_serving_protein_g || 0;
   const carbs = food.unit_serving_carb_g || 0;
@@ -56,15 +55,13 @@ const scoreFood = (food, goal) => {
 
   return score;
 };
-//basal metabolic rate (BMR) calculation logic
+
 const calculateBMR = ({ age, gender, height, weight }) => {
-  if (gender === 'Male') {
-    return 10 * weight + 6.25 * height - 5 * age + 5;
-  } else {
-    return 10 * weight + 6.25 * height - 5 * age - 161;
-  }
+  return gender === 'Male'
+    ? 10 * weight + 6.25 * height - 5 * age + 5
+    : 10 * weight + 6.25 * height - 5 * age - 161;
 };
-//real feel of the person
+
 const getActivityFactor = (level) => {
   const factors = {
     Sedentary: 1.2,
@@ -75,13 +72,13 @@ const getActivityFactor = (level) => {
   };
   return factors[level] || 1.2;
 };
-//split calorie according to goal
+
 const adjustCaloriesByGoal = (tdee, goal) => {
   if (goal === 'Weight Loss') return tdee - 500;
   if (goal === 'Weight Gain') return tdee + 500;
   return tdee;
 };
-//logic for calorie distribution across meals
+
 const splitCaloriesDynamic = (total, meals) => {
   const split = {
     Breakfast: 0.25,
@@ -90,17 +87,11 @@ const splitCaloriesDynamic = (total, meals) => {
     'Evening Snack': 0.1,
     Dinner: 0.25,
   };
-
-  const filtered = Object.entries(split)
-    .filter(([key]) => meals.includes(key));
-
+  const filtered = Object.entries(split).filter(([k]) => meals.includes(k));
   const totalSplit = filtered.reduce((acc, [_, v]) => acc + v, 0);
-
-  return Object.fromEntries(
-    filtered.map(([k, v]) => [k, Math.round((v / totalSplit) * total)])
-  );
+  return Object.fromEntries(filtered.map(([k, v]) => [k, Math.round((v / totalSplit) * total)]));
 };
-//fallback is for conformation that Meal is generated succesfully even if the options are limited., will not give an incomplete diet plan
+
 const selectFoodForMeal = (foods, calorieTarget) => {
   if (!foods.length) return { fallbackUsed: true, food: null };
   let bestMatch = foods.reduce((prev, curr) => {
@@ -111,13 +102,13 @@ const selectFoodForMeal = (foods, calorieTarget) => {
   return { fallbackUsed: false, food: bestMatch };
 };
 
-//filter by health conditions
 const filterByHealthConditions = (foods, healthConditions) => {
   return foods.filter(food => {
     const sugar = food.unit_serving_freesugar_g || 0;
     const sodium = food.unit_serving_sodium_mg || 0;
     const fat = food.unit_serving_fat_g || 0;
     const cholesterol = food.unit_serving_cholesterol_mg || 0;
+    const protein = food.unit_serving_protein_g || 0;
 
     if (healthConditions.includes('Diabetes') && sugar > 8) return false;
     if (healthConditions.includes('Hypertension') && sodium > 400) return false;
@@ -128,83 +119,81 @@ const filterByHealthConditions = (foods, healthConditions) => {
     return true;
   });
 };
-const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+exports.generateDietPlan = async (req, res) => {
+  try {
+    const {
+      age,
+      gender,
+      height,
+      weight,
+      activityLevel,
+      healthGoals,
+      dietaryPreference = '',
+      allergies = [],
+      mealTiming = ['Breakfast', 'Lunch', 'Dinner'],
+      healthConditions = [],
+    } = req.body;
+
+    const userGoal = healthGoals[0];
+    const bmr = calculateBMR({ age, gender, height, weight });
+    const tdee = bmr * getActivityFactor(activityLevel);
+    const adjustedCalories = adjustCaloriesByGoal(tdee, userGoal);
+    const mealCalories = splitCaloriesDynamic(adjustedCalories, mealTiming);
+
+    const allFoods = await Food.find();
     const weeklyPlan = {};
-    exports.generateDietPlan = async (req, res) => {
-      try {
-        const {
-          age, gender, height, weight, activityLevel,
-          healthGoals, dietaryPreference,
-          allergies = [], mealTiming = ['Breakfast', 'Lunch', 'Dinner'],
-          healthConditions = [],
-        } = req.body;
-    
-        const userGoal = healthGoals[0];
-        const bmr = calculateBMR({ age, gender, height, weight });
-        const tdee = bmr * getActivityFactor(activityLevel);
-        const adjustedCalories = adjustCaloriesByGoal(tdee, userGoal);
-        const mealCalories = splitCaloriesDynamic(adjustedCalories, mealTiming);
-        const allFoods = await Food.find({});
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-        const weeklyPlan = {};
-        const foodUsageMap = new Map();
-        //mapper function for generating meal plan for whole week taking care of redundancy
-        const isFoodOverused = (foodName) => foodUsageMap.get(foodName) >= 2;
-        const incrementFoodUsage = (foodName) => {
-          foodUsageMap.set(foodName, (foodUsageMap.get(foodName) || 0) + 1);
-        };
-    
-        for (let day of days) {
-          weeklyPlan[day] = {};
-    
-          for (let meal of mealTiming) {
-            let foods = allFoods.filter(food => {
-              if (dietaryPreference === 'Vegetarian' && food.DietType !== 'Vegetarian') return false;
-              if (dietaryPreference === 'Vegan' && food.DietType !== 'Vegan') return false;
-              if (!food['Best Time to Eat'] || !food['Best Time to Eat'].includes(meal)) return false;
-              if (allergies.some(a => food.food_name.toLowerCase().includes(a.toLowerCase()))) return false;
-              if (isFoodOverused(food.food_name)) return false;
-              return true;
-            });
-    
-            foods = filterByHealthConditions(foods, healthConditions);
-    
-            let { food } = selectFoodForMeal(foods, mealCalories[meal]);
-    
-            if (!food) {
-              // Fallback logic that avoids overused foods
-              //also ensures that there is no incomplete dieat plan if the options are limited 
-              const fallbackOptions = allFoods.filter(f =>
-                !isFoodOverused(f.food_name) &&
-                (!f['Best Time to Eat'] || f['Best Time to Eat'].includes(meal))
-              );
-              let fallback = selectFoodForMeal(filterByHealthConditions(fallbackOptions, healthConditions), mealCalories[meal]);
-              food = fallback.food;
-            }
-    
-            if (food) {
-              incrementFoodUsage(food.food_name);
-            }
-    
-            weeklyPlan[day][meal] = food ? [food] : [];
-          }
-        }
-    
-        res.json({
-          success: true,
-          bmr,
-          tdee,
-          adjustedCalories,
-          mealCalories,
-          weeklyDietPlan: weeklyPlan,
+    const foodUsageMap = new Map();
+
+    const dietaryPref = dietaryPreference.toLowerCase();
+
+    const isFoodOverused = (name) => foodUsageMap.get(name) >= 2;
+    const incrementFoodUsage = (name) => foodUsageMap.set(name, (foodUsageMap.get(name) || 0) + 1);
+
+    for (let day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) {
+      weeklyPlan[day] = {};
+      for (let meal of mealTiming) {
+        let foods = allFoods.filter(food => {
+          const dietType = food.diet_type?.toLowerCase() || '';
+
+          if (dietaryPref === 'vegan' && dietType !== 'vegan') return false;
+          if (dietaryPref === 'vegetarian' && !['vegan', 'veg (not vegan)'].includes(dietType)) return false;
+          if (!food.best_time_to_eat?.includes(meal)) return false;
+          if (allergies.some(a => food.food_name.toLowerCase().includes(a.toLowerCase()))) return false;
+          if (isFoodOverused(food.food_name)) return false;
+          return true;
         });
-    
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false, error: 'Server error' });
+
+        foods = filterByHealthConditions(foods, healthConditions);
+        let { food } = selectFoodForMeal(foods, mealCalories[meal]);
+
+        if (!food) {
+          const fallbackOptions = allFoods.filter(f => {
+            const type = f.diet_type?.toLowerCase() || '';
+            const matchesDiet =
+              dietaryPref === 'vegan' ? type === 'vegan' :
+              dietaryPref === 'vegetarian' ? ['vegan', 'veg (not vegan)'].includes(type) : true;
+
+            return matchesDiet &&
+              !isFoodOverused(f.food_name) &&
+              f.best_time_to_eat?.includes(meal);
+          });
+
+          const fallback = selectFoodForMeal(filterByHealthConditions(fallbackOptions, healthConditions), mealCalories[meal]);
+          food = fallback.food;
+        }
+
+        if (food) incrementFoodUsage(food.food_name);
+        weeklyPlan[day][meal] = food ? [food] : [];
       }
-    };
-    
+    }
+
+    res.json({ success: true, bmr, tdee, adjustedCalories, mealCalories, weeklyDietPlan: weeklyPlan });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, error: 'Server error' });
+  }
+};
 
 exports.getDietPlan = async (req, res) => {
   try {
@@ -215,14 +204,9 @@ exports.getDietPlan = async (req, res) => {
     }
 
     let allFoods = await Food.find();
-
-    // Phase 1: Filtering based on user preferences
     const filtered = filterFoods(allFoods, userPrefs);
-
-    // Phase 2: Selecting the top foods based on health goals and meal timings
-
-    //missing Health Conditions based filtering
-    const plan = selectTopFoods(filtered, userPrefs.healthGoals[0], userPrefs.mealTimings);
+    const filteredByConditions = filterByHealthConditions(filtered, userPrefs.healthConditions || []);
+    const plan = selectTopFoods(filteredByConditions, userPrefs.healthGoals[0], userPrefs.mealTimings);
 
     return res.json({ success: true, dietPlan: plan });
 
