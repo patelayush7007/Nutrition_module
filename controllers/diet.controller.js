@@ -64,7 +64,7 @@ const calculateBMR = ({ age, gender, height, weight }) => {
 
 const getActivityFactor = (level) => {
   const factors = {
-    Sedentary: 1.2,
+    'Sedentary': 1.2,
     'Lightly active': 1.375,
     'Moderately active': 1.55,
     'Very active': 1.725,
@@ -92,16 +92,6 @@ const splitCaloriesDynamic = (total, meals) => {
   return Object.fromEntries(filtered.map(([k, v]) => [k, Math.round((v / totalSplit) * total)]));
 };
 
-const selectFoodForMeal = (foods, calorieTarget) => {
-  if (!foods.length) return { fallbackUsed: true, food: null };
-  let bestMatch = foods.reduce((prev, curr) => {
-    const diff = Math.abs((curr.unit_serving_energy_kcal || 0) - calorieTarget);
-    const prevDiff = Math.abs((prev.unit_serving_energy_kcal || 0) - calorieTarget);
-    return diff < prevDiff ? curr : prev;
-  });
-  return { fallbackUsed: false, food: bestMatch };
-};
-
 const filterByHealthConditions = (foods, healthConditions) => {
   return foods.filter(food => {
     const sugar = food.unit_serving_freesugar_g || 0;
@@ -118,6 +108,28 @@ const filterByHealthConditions = (foods, healthConditions) => {
 
     return true;
   });
+};
+
+const selectBestFoodCombo = (foods, targetCalories) => {
+  foods.sort((a, b) => {
+    const diffA = Math.abs((a.unit_serving_energy_kcal || 0) - targetCalories);
+    const diffB = Math.abs((b.unit_serving_energy_kcal || 0) - targetCalories);
+    return diffA - diffB;
+  });
+
+  const singleFood = foods.find(food => Math.abs((food.unit_serving_energy_kcal || 0) - targetCalories) <= 50);
+  if (singleFood) return [singleFood];
+
+  for (let i = 0; i < foods.length; i++) {
+    for (let j = i + 1; j < foods.length; j++) {
+      const total = (foods[i].unit_serving_energy_kcal || 0) + (foods[j].unit_serving_energy_kcal || 0);
+      if (Math.abs(total - targetCalories) <= 50) {
+        return [foods[i], foods[j]];
+      }
+    }
+  }
+
+  return foods.slice(0, 1); // fallback to one best match
 };
 
 exports.generateDietPlan = async (req, res) => {
@@ -146,7 +158,6 @@ exports.generateDietPlan = async (req, res) => {
     const foodUsageMap = new Map();
 
     const dietaryPref = dietaryPreference.toLowerCase();
-
     const isFoodOverused = (name) => foodUsageMap.get(name) >= 2;
     const incrementFoodUsage = (name) => foodUsageMap.set(name, (foodUsageMap.get(name) || 0) + 1);
 
@@ -155,7 +166,6 @@ exports.generateDietPlan = async (req, res) => {
       for (let meal of mealTiming) {
         let foods = allFoods.filter(food => {
           const dietType = food.diet_type?.toLowerCase() || '';
-
           if (dietaryPref === 'vegan' && dietType !== 'vegan') return false;
           if (dietaryPref === 'vegetarian' && !['vegan', 'veg (not vegan)'].includes(dietType)) return false;
           if (!food.best_time_to_eat?.includes(meal)) return false;
@@ -165,9 +175,10 @@ exports.generateDietPlan = async (req, res) => {
         });
 
         foods = filterByHealthConditions(foods, healthConditions);
-        let { food } = selectFoodForMeal(foods, mealCalories[meal]);
 
-        if (!food) {
+        let selectedFoods = selectBestFoodCombo(foods, mealCalories[meal]);
+
+        if (!selectedFoods.length) {
           const fallbackOptions = allFoods.filter(f => {
             const type = f.diet_type?.toLowerCase() || '';
             const matchesDiet =
@@ -179,12 +190,12 @@ exports.generateDietPlan = async (req, res) => {
               f.best_time_to_eat?.includes(meal);
           });
 
-          const fallback = selectFoodForMeal(filterByHealthConditions(fallbackOptions, healthConditions), mealCalories[meal]);
-          food = fallback.food;
+          const fallbackFoods = filterByHealthConditions(fallbackOptions, healthConditions);
+          selectedFoods = selectBestFoodCombo(fallbackFoods, mealCalories[meal]);
         }
 
-        if (food) incrementFoodUsage(food.food_name);
-        weeklyPlan[day][meal] = food ? [food] : [];
+        selectedFoods.forEach(food => incrementFoodUsage(food.food_name));
+        weeklyPlan[day][meal] = selectedFoods;
       }
     }
 
@@ -195,23 +206,3 @@ exports.generateDietPlan = async (req, res) => {
   }
 };
 
-exports.getDietPlan = async (req, res) => {
-  try {
-    const userPrefs = req.body;
-
-    if (!userPrefs.healthGoals || !userPrefs.mealTimings) {
-      return res.status(400).json({ success: false, message: 'Missing healthGoals or mealTimings in request body.' });
-    }
-
-    let allFoods = await Food.find();
-    const filtered = filterFoods(allFoods, userPrefs);
-    const filteredByConditions = filterByHealthConditions(filtered, userPrefs.healthConditions || []);
-    const plan = selectTopFoods(filteredByConditions, userPrefs.healthGoals[0], userPrefs.mealTimings);
-
-    return res.json({ success: true, dietPlan: plan });
-
-  } catch (error) {
-    console.error('Error generating diet plan:', error);
-    return res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
