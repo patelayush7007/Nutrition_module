@@ -55,13 +55,13 @@ const scoreFood = (food, goal) => {
 
   return score;
 };
-
+// Bmr calculator
 const calculateBMR = ({ age, gender, height, weight }) => {
   return gender === 'Male'
     ? 10 * weight + 6.25 * height - 5 * age + 5
     : 10 * weight + 6.25 * height - 5 * age - 161;
 };
-
+//activity factor check
 const getActivityFactor = (level) => {
   const factors = {
     'Sedentary': 1.2,
@@ -72,13 +72,14 @@ const getActivityFactor = (level) => {
   };
   return factors[level] || 1.2;
 };
-
+// calorie adjustment according to user goals
 const adjustCaloriesByGoal = (tdee, goal) => {
   if (goal === 'Weight Loss') return tdee - 500;
   if (goal === 'Weight Gain') return tdee + 500;
   return tdee;
 };
 
+// split the calorie requirement throught the meals
 const splitCaloriesDynamic = (total, meals) => {
   const split = {
     Breakfast: 0.25,
@@ -88,10 +89,12 @@ const splitCaloriesDynamic = (total, meals) => {
     Dinner: 0.25,
   };
   const filtered = Object.entries(split).filter(([k]) => meals.includes(k));
-  const totalSplit = filtered.reduce((acc, [_, v]) => acc + v, 0);
+
+  // in the context structure , the meal is set for 5 splits , but this will be done according to the split function ,for user preference if he wants to add 4 or 3 meals per day
+  const totalSplit = filtered.reduce((acc, [_, v]) => acc + v, 0); //simply adds the current meal's value to the accumulator.
   return Object.fromEntries(filtered.map(([k, v]) => [k, Math.round((v / totalSplit) * total)]));
 };
-
+// filter foods by health condition
 const filterByHealthConditions = (foods, healthConditions) => {
   return foods.filter(food => {
     const sugar = food.unit_serving_freesugar_g || 0;
@@ -109,28 +112,29 @@ const filterByHealthConditions = (foods, healthConditions) => {
     return true;
   });
 };
-
-const selectBestFoodCombo = (foods, targetCalories) => {
+// complementary item addon
+const selectFoodCombo = (foods, targetCalories) => {
   foods.sort((a, b) => {
     const diffA = Math.abs((a.unit_serving_energy_kcal || 0) - targetCalories);
     const diffB = Math.abs((b.unit_serving_energy_kcal || 0) - targetCalories);
     return diffA - diffB;
   });
 
-  const singleFood = foods.find(food => Math.abs((food.unit_serving_energy_kcal || 0) - targetCalories) <= 50);
-  if (singleFood) return [singleFood];
+  // picking multiple foods to reach target
+  let combo = [];
+  let totalCalories = 0;
 
-  for (let i = 0; i < foods.length; i++) {
-    for (let j = i + 1; j < foods.length; j++) {
-      const total = (foods[i].unit_serving_energy_kcal || 0) + (foods[j].unit_serving_energy_kcal || 0);
-      if (Math.abs(total - targetCalories) <= 50) {
-        return [foods[i], foods[j]];
-      }
+  for (let food of foods) {
+    if (totalCalories + (food.unit_serving_energy_kcal || 0) <= targetCalories + 50) {
+      combo.push(food);
+      totalCalories += (food.unit_serving_energy_kcal || 0);
+      if (totalCalories >= targetCalories - 50) break; // close enough
     }
   }
 
-  return foods.slice(0, 1); // fallback to one best match
+  return combo.length ? combo : foods
 };
+
 
 exports.generateDietPlan = async (req, res) => {
   try {
@@ -143,7 +147,7 @@ exports.generateDietPlan = async (req, res) => {
       healthGoals,
       dietaryPreference = '',
       allergies = [],
-      mealTiming = ['Breakfast', 'Lunch', 'Dinner'],
+      mealTiming = [],
       healthConditions = [],
     } = req.body;
 
@@ -155,11 +159,13 @@ exports.generateDietPlan = async (req, res) => {
 
     const allFoods = await Food.find();
     const weeklyPlan = {};
-    const foodUsageMap = new Map();
+    const foodUsageMap = new Map(); //mapper function for no food item is added more than twice 
 
     const dietaryPref = dietaryPreference.toLowerCase();
-    const isFoodOverused = (name) => foodUsageMap.get(name) >= 2;
-    const incrementFoodUsage = (name) => foodUsageMap.set(name, (foodUsageMap.get(name) || 0) + 1);
+    const isFoodOverused = (name) => foodUsageMap.get(name) >= 2; // checks if the food item is used >=2
+    const incrementFoodUsage = (name) => foodUsageMap.set(name, (foodUsageMap.get(name) || 0) + 1); //increments usage everytime the food item is used
+
+    const simplifiedWeeklyPlan = {};
 
     for (let day of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']) {
       weeklyPlan[day] = {};
@@ -176,14 +182,14 @@ exports.generateDietPlan = async (req, res) => {
 
         foods = filterByHealthConditions(foods, healthConditions);
 
-        let selectedFoods = selectBestFoodCombo(foods, mealCalories[meal]);
+        let selectedFoods = selectFoodCombo(foods, mealCalories[meal]);
 
         if (!selectedFoods.length) {
           const fallbackOptions = allFoods.filter(f => {
             const type = f.diet_type?.toLowerCase() || '';
             const matchesDiet =
               dietaryPref === 'vegan' ? type === 'vegan' :
-              dietaryPref === 'vegetarian' ? ['vegan', 'veg (not vegan)'].includes(type) : true;
+                dietaryPref === 'vegetarian' ? ['vegan', 'veg (not vegan)'].includes(type) : true;
 
             return matchesDiet &&
               !isFoodOverused(f.food_name) &&
@@ -191,7 +197,21 @@ exports.generateDietPlan = async (req, res) => {
           });
 
           const fallbackFoods = filterByHealthConditions(fallbackOptions, healthConditions);
-          selectedFoods = selectBestFoodCombo(fallbackFoods, mealCalories[meal]);
+          // if you apply all these filters and no foods are left then fallback function makes the filtration checks lite anf filters only on the basis of diet type and health condn
+          selectedFoods = selectFoodCombo(fallbackFoods, mealCalories[meal]);
+        }
+
+        //SIMPLIFICATION OF DIET PLAN 
+        for (const day in weeklyPlan) {
+          simplifiedWeeklyPlan[day] = {};
+          for (const meal in weeklyPlan[day]) {
+            simplifiedWeeklyPlan[day][meal] = weeklyPlan[day][meal].map(food => ({
+              food_name: food.food_name,
+              primarysource: food.primarysource,
+              unit_serving_energy_kcal: food.unit_serving_energy_kcal,
+              energy_kcal : food.energy_kcal
+            }));
+          }
         }
 
         selectedFoods.forEach(food => incrementFoodUsage(food.food_name));
@@ -199,7 +219,15 @@ exports.generateDietPlan = async (req, res) => {
       }
     }
 
-    res.json({ success: true, bmr, tdee, adjustedCalories, mealCalories, weeklyDietPlan: weeklyPlan });
+    res.json({
+      success: true,
+      bmr,
+      tdee,
+      adjustedCalories,
+      mealCalories,
+      // weeklyDietPlan: weeklyPlan,
+      weeklyDietPlan: simplifiedWeeklyPlan
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, error: 'Server error' });
