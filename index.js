@@ -13,7 +13,6 @@ const app = express();
 app.use(cors(corsOptions));
 app.use(express.json());
 
-app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/diet', require('./routes/diet.routes'));
 app.use('/api', foodRoutes);
 app.use('/api/diet', dietRoutes);

@@ -1,5 +1,4 @@
 const Food = require('../models/food.model');
-const { filterFoods, selectTopFoods } = require('../utils/dietAlgorithm');
 
 // Scoring function
 const scoreFood = (food, goal) => {
